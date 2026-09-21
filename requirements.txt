@@ -1,4 +1,4 @@
-Flask
-requests
-pycryptodome
-protobuf
+Flask>=3.0,<4
+requests>=2.31,<3
+pycryptodome>=3.20,<4
+protobuf>=4.25.1,<6

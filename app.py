@@ -2,6 +2,7 @@ import sys
 sys.path.append("/")
 
 import requests
+from flask import Flask, jsonify, request
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from protobuf import my_pb2
@@ -11,6 +12,37 @@ from urllib3.exceptions import InsecureRequestWarning
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 AES_KEY = b'Yg&tc%DEuh6%Zc^8'
+
+app = Flask(__name__)
+
+
+def _request_credentials():
+    """Read UID/password from JSON body, form data, or query parameters."""
+    data = request.get_json(silent=True) or {}
+    uid = data.get("uid") or request.form.get("uid") or request.args.get("uid")
+    password = data.get("password") or request.form.get("password") or request.args.get("password")
+    return (str(uid).strip() if uid is not None else ""), (str(password).strip() if password is not None else "")
+
+
+@app.get("/")
+def health():
+    return jsonify({"status": "ok", "service": "Free Fire Token Generator API", "usage": "/api/token?uid=...&password=..."})
+
+
+@app.route("/api/token", methods=["GET", "POST"])
+def api_token():
+    uid, password = _request_credentials()
+    if not uid or not password:
+        return jsonify({"error": "uid and password are required"}), 400
+
+    try:
+        result = process_token(uid, password)
+    except Exception as exc:
+        app.logger.exception("Token generation failed")
+        return jsonify({"error": "Token generation failed", "detail": str(exc)}), 500
+
+    return jsonify(result), (400 if "error" in result else 200)
+
 AES_IV  = b'6oyZDr22E3ychjM%'
 
 
