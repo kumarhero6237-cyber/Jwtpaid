@@ -2,7 +2,7 @@ import sys
 sys.path.append("/")
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, request, render_template_string
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from protobuf import my_pb2
@@ -11,38 +11,9 @@ import warnings
 from urllib3.exceptions import InsecureRequestWarning
 warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
-AES_KEY = b'Yg&tc%DEuh6%Zc^8'
-
 app = Flask(__name__)
 
-
-def _request_credentials():
-    """Read UID/password from JSON body, form data, or query parameters."""
-    data = request.get_json(silent=True) or {}
-    uid = data.get("uid") or request.form.get("uid") or request.args.get("uid")
-    password = data.get("password") or request.form.get("password") or request.args.get("password")
-    return (str(uid).strip() if uid is not None else ""), (str(password).strip() if password is not None else "")
-
-
-@app.get("/")
-def health():
-    return jsonify({"status": "ok", "service": "Free Fire Token Generator API", "usage": "/api/token?uid=...&password=..."})
-
-
-@app.route("/api/token", methods=["GET", "POST"])
-def api_token():
-    uid, password = _request_credentials()
-    if not uid or not password:
-        return jsonify({"error": "uid and password are required"}), 400
-
-    try:
-        result = process_token(uid, password)
-    except Exception as exc:
-        app.logger.exception("Token generation failed")
-        return jsonify({"error": "Token generation failed", "detail": str(exc)}), 500
-
-    return jsonify(result), (400 if "error" in result else 200)
-
+AES_KEY = b'Yg&tc%DEuh6%Zc^8'
 AES_IV  = b'6oyZDr22E3ychjM%'
 
 
@@ -61,8 +32,16 @@ def get_token(password, uid):
         "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
         "client_id": "100067"
     }
-    r = requests.post(url, headers=headers, data=data, verify=False, timeout=20)
-    return r.json() if r.status_code == 200 else None
+    try:
+        r = requests.post(url, headers=headers, data=data, verify=False, timeout=20)
+    except requests.RequestException as e:
+        return None, {"status": 0, "message": str(e)}
+    if r.status_code == 200:
+        try:
+            return r.json(), None
+        except ValueError:
+            return None, {"status": r.status_code, "message": "Upstream returned non-JSON response"}
+    return None, {"status": r.status_code, "message": r.text[:500]}
 
 
 def encrypt_message(key, iv, plaintext):
@@ -137,8 +116,10 @@ def find_protobuf_start(buf):
 
 
 def process_token(uid, password):
-    token_data = get_token(password, uid)
+    token_data, token_error = get_token(password, uid)
     if not token_data:
+        if token_error:
+            return {"error": f"OAuth HTTP {token_error.get('status')}: {token_error.get('message')}"}
         return {"error": "Failed to retrieve OAuth token"}
 
     g = my_pb2.GameData()
@@ -254,6 +235,29 @@ def process_token(uid, password):
         "country": country,
         "status":  status,
     }
+
+
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Free Fire Token Generator</title>
+<style>*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#0b0d10;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}.card{width:100%;max-width:460px;background:#151922;border:1px solid #2a3040;border-radius:18px;padding:24px;box-shadow:0 15px 50px #0008}h1{font-size:24px;margin:0 0 8px}.muted{color:#9da5b5;font-size:13px;margin-bottom:22px}label{display:block;font-size:13px;color:#cbd1dc;margin:13px 0 7px}input{width:100%;padding:13px;border-radius:10px;border:1px solid #343b4b;background:#0e1117;color:#fff;outline:none}button{width:100%;margin-top:18px;padding:13px;border:0;border-radius:10px;background:#fff;color:#111;font-weight:700;font-size:15px}button:disabled{opacity:.6}.result{margin-top:20px;padding:14px;border-radius:12px;background:#0d1016;border:1px solid #2b3240;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55}.err{border-color:#713a3a;color:#ffb7b7}.small{font-size:11px;color:#788195;margin-top:14px}</style></head>
+<body><main class="card"><h1>Free Fire Token Generator</h1><div class="muted">Enter UID and password, then press Generate. The URL does not need to be changed.</div>
+<form id="f"><label>UID</label><input id="uid" name="uid" value="123456789" inputmode="numeric" required><label>Password</label><input id="password" name="password" value="testpassword" type="password" required><button id="btn">Generate Token</button></form>
+<div id="out" class="result" style="display:none"></div><div class="small">The pre-filled values are placeholders; use your own valid test credentials.</div></main>
+<script>const f=document.getElementById('f'),out=document.getElementById('out'),btn=document.getElementById('btn');f.addEventListener('submit',async e=>{e.preventDefault();btn.disabled=true;btn.textContent='Generating...';out.style.display='block';out.className='result';out.textContent='Please wait...';try{const r=await fetch('/api/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({uid:document.getElementById('uid').value.trim(),password:document.getElementById('password').value})});const data=await r.json();out.className='result '+(data.error?'err':'');out.textContent=JSON.stringify(data,null,2)}catch(err){out.className='result err';out.textContent='Request failed: '+err}finally{btn.disabled=false;btn.textContent='Generate Token'}});</script></body></html>"""
+
+@app.get('/')
+def home():
+    return render_template_string(PAGE)
+
+@app.post('/api/token')
+def api_token():
+    data = request.get_json(silent=True) or request.form.to_dict()
+    uid = str(data.get('uid', '')).strip()
+    password = str(data.get('password', ''))
+    if not uid or not password:
+        return {"error": "UID and password are required"}, 400
+    result = process_token(uid, password)
+    return result, (400 if "error" in result else 200)
 
 
 if __name__ == "__main__":
